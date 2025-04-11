@@ -1,5 +1,6 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
 using Microsoft.IdentityModel.Tokens;
@@ -8,6 +9,7 @@ using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using XinWebAPI.Auth.JWTBearer.Model;
+using XinWebAPI.Auth.JWTBearer.Utilities;
 
 namespace XinWebAPI.Auth.JWTBearer.Controllers
 {
@@ -15,31 +17,14 @@ namespace XinWebAPI.Auth.JWTBearer.Controllers
     [ApiController]
     public class AuthController : ControllerBase
     {
-        public static List<User> Users = new List<User>
-        {
-            new User
-            {
-                UserId = "1",
-                UserName = "bilbo",
-                DisplayName = "BilboBaggins",
-                Email = "john@abc.com",
-                Password = "1234de@56"
-            },
-            new User
-            {
-                UserId = "2",
-                UserName = "Frodo",
-                DisplayName = "FrodoBaggins",
-                Email = "FRodo@abc.com",
-                Password = "dedeed@56"
-            }
-        };
 
         public IConfiguration _configuration;
+        public UserManager<User> _userManager;
 
-        public AuthController(IConfiguration configuration)
+        public AuthController(IConfiguration configuration, UserManager<User> userManager)
         {
             _configuration = configuration;
+            _userManager = userManager;
         }
 
         [HttpGet("tokenValidate")]
@@ -57,12 +42,15 @@ namespace XinWebAPI.Auth.JWTBearer.Controllers
                 return BadRequestErrorMessages();
             }
 
-            var user = await GetUser(loginRequest.Email, loginRequest.Password);
+            var user = await _userManager.FindByEmailAsync(loginRequest.Email);
+            var isAuthorized = user != null && await _userManager.CheckPasswordAsync(user,loginRequest.Password);
 
-            if(user != null)
+            if (isAuthorized)
             {
                 // Add token string to response object and send it back to response
                 var authResponse = await GetToken(user);
+                user.RefreshToken = authResponse.RefreshToken;
+                await _userManager.UpdateAsync(user);
                 return Ok(authResponse);
             }
             else
@@ -79,22 +67,37 @@ namespace XinWebAPI.Auth.JWTBearer.Controllers
                 return BadRequestErrorMessages();
             }
 
-            var isEmailAlreadyRegistered = await GetUserByEmail(registerRequest.Email) != null;
+            var isEmailAlreadyRegistered = await _userManager.FindByEmailAsync(registerRequest.Email) != null;
+            var isUserNameAlreadyRegisteres = await _userManager.FindByNameAsync(registerRequest.UserName) != null;
 
             if (isEmailAlreadyRegistered)
             {
                 return Conflict($"Email Id {registerRequest.Email} is already registered");
             }
+            if (isUserNameAlreadyRegisteres)
+            {
+                return Conflict($"Username Id {registerRequest.UserName} is already registered");
+            }
 
-            await AddUser(new User
+            var newUser = new User
             {
                 UserName = registerRequest.UserName,
                 Email = registerRequest.Email,
-                Password = registerRequest.Password,
-                DisplayName = registerRequest.UserName
-            });
+                //Password = registerRequest.Password,
+                //DisplayName = registerRequest.UserName
+            };
 
-            return Ok("User registered successfully");
+            var result = await _userManager.CreateAsync(newUser, registerRequest.Password);
+
+            if (result.Succeeded)
+            {
+                return Ok("User registered successfully");
+            }
+            else
+            {
+                return StatusCode(500, result.Errors.Select(e => new { Msg = e.Code, Desc = e.Description }).ToList());
+            }
+            
         }
 
         [HttpPost("refresh")]
@@ -106,7 +109,7 @@ namespace XinWebAPI.Auth.JWTBearer.Controllers
             }
 
             //check if any user with this refresh token exists
-            var user = await GetUserByRefreshToken(request.RefreshToken);
+            var user = _userManager.Users.FirstOrDefault(u => u.RefreshToken == request.RefreshToken);
             if(user==null)
             {
                 return BadRequest("Invalid refresh token");
@@ -114,45 +117,33 @@ namespace XinWebAPI.Auth.JWTBearer.Controllers
 
             //provide new access and refresh token
             var response = await GetToken(user);
+            user.RefreshToken = response.RefreshToken;
+            await _userManager.UpdateAsync(user);
             return Ok(response);
         }
 
-        [HttpPost("revoke")]    
+        [HttpPost("revoke")]
+        [Authorize]
         public async Task<IActionResult> Revoke(RevokeRequest request)
         {
             if (!ModelState.IsValid)
             {
                 return BadRequestErrorMessages();
             }
-            //check if any user with this refresh token exists
-            var user = await GetUserByRefreshToken(request.RefreshToken);
-            if (user == null)
+
+            // fetch email from the claims of currently logged in user
+            var userEmail = this.HttpContext.User.FindFirstValue("Email");
+
+            // check if the user is logged in
+            var user = !string.IsNullOrEmpty(userEmail) ? await _userManager.FindByEmailAsync(userEmail) : null;
+            if (user == null || user.RefreshToken != request.RefreshToken)
             {
                 return BadRequest("Invalid refresh token");
             }
             //revoke the refresh token
-            user.Refreshtoken = null;
+            user.RefreshToken = null;
+            await _userManager.UpdateAsync(user);
             return Ok("Refresh token revoked successfully");
-        }
-
-        private async Task<User> AddUser(User newUser)
-        {
-            newUser.UserId = $"user{DateTime.Now.ToString("hhmmss")}";
-            Users.Add(newUser);
-            return newUser;
-        }
-        private async Task<User> GetUser(string email, string password)
-        {
-            return await Task.FromResult(Users.FirstOrDefault(x => x.Email == email && x.Password == password));
-
-        }
-        private async Task<User> GetUserByEmail(string email)
-        {
-            return await Task.FromResult(Users.FirstOrDefault(x => x.Email == email));
-        }
-        private async Task<User> GetUserByRefreshToken(string refreshToken)
-        {
-            return await Task.FromResult(Users.FirstOrDefault(x => x.Refreshtoken == refreshToken));
         }
 
         private async Task<AuthResponse> GetToken(User user)
@@ -160,31 +151,31 @@ namespace XinWebAPI.Auth.JWTBearer.Controllers
             //create claims details based on the user information
             var claims = new[]
             {
-                    new Claim(JwtRegisteredClaimNames.Sub, _configuration["token:subject"]),
+                    new Claim(JwtRegisteredClaimNames.Sub, _configuration[Constants.TokenSubject]),
                     new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
                     new Claim(JwtRegisteredClaimNames.Iat, DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString()),
-                    new Claim("UserId", user.UserId),
+                    new Claim("UserId", user.Id),
                     new Claim("UserName", user.UserName),
-                    new Claim("DisplayName", user.DisplayName),
+                    //new Claim("DisplayName", user.DisplayName),
                 };
 
             //Create Signing Credentials to sign the JWT token
-            var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_configuration["token:key"]));
+            var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_configuration[Constants.TokenKey]));
             var signIn = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
 
             //Create the JWT token
             var token = new JwtSecurityToken(
-                _configuration["token:issuer"],
-                _configuration["token:audience"],
+                _configuration[Constants.TokenIssuer],
+                _configuration[Constants.TokenAudience],
                 claims,
-                expires: DateTime.UtcNow.AddMinutes(Convert.ToDouble(_configuration["token:accessTokenExpiryMinutes"])),
+                expires: DateTime.UtcNow.AddMinutes(Convert.ToDouble(_configuration[Constants.TokenMinuteExpiration])),
                 signingCredentials: signIn
             );
 
             // Serialize the token to a string
             var tokenString = new JwtSecurityTokenHandler().WriteToken(token);
             var refreshToken = GetRefreshToken();
-            user.Refreshtoken = refreshToken;
+            user.RefreshToken = refreshToken;
 
             // Add token string to response object and send it back to response
             var authResponse = new AuthResponse
@@ -201,7 +192,7 @@ namespace XinWebAPI.Auth.JWTBearer.Controllers
         { 
             var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(64));
             // ensure token is unique
-            var tokenisUnique = !Users.Any(x => x.Refreshtoken == token);
+            var tokenisUnique = !_userManager.Users.Any(x => x.RefreshToken == token);
             if (!tokenisUnique)
             {
                 return GetRefreshToken();

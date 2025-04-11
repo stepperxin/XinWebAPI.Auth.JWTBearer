@@ -1,5 +1,17 @@
 WHAT'S NEW
 ------------------
+Version 1.0.0:
+------------------
+- First release including IdentityCore on MySQL DB
+- AspNetUser Class had been extended with the following additional fields:
+  - DisplayName
+  - DateOfBirth
+  - Address
+  - City
+  - State
+  - Country
+  - RefreshToken: this is used to store the refresh token for the user each time he logs in
+------------------
 Version 0.0.1:
 ------------------
 - Initial release of the JWT Token generator for .NET 8 Web API, it works as in memory only, no repository is supported
@@ -13,49 +25,44 @@ Version 0.0.1:
 HOW TO
 ------------------
 - Add this project to any Web API you need to build JWT Token 
-- Add the following code to your Program.cs file rigth after the AddController
+- Add the following code to your Program.cs file rigth before var app = builder.Build();
 
-//Add JWT Authentication
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options =>
-    {
-        options.IncludeErrorDetails = true;
-        options.RequireHttpsMetadata = false;
-        options.SaveToken = true;
-        options.TokenValidationParameters = new TokenValidationParameters()
-        {
-            ValidateIssuer = true,
-            ValidateAudience = true,
-            ValidateLifetime = true,
-            ValidateIssuerSigningKey = true,
-            ValidIssuer = builder.Configuration["token:issuer"],
-            ValidAudience = builder.Configuration["token:audience"],
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(builder.Configuration["token:key"]))
-        };
-    });
+    builder.Services.AddXinJWTBearerService(builder.Configuration)
 
 - Make sure to have the token area configured in appsettings as described in the section below
 
 
 CONFIGURATIONS
 ------------------
+- Database:
+----------------
+- Make sure to create a ConnectionsString called "XinWebAPI.Auth.JWTBearer" in your AppSettings file
+- CodeFirst: 
+    - Use the command "Add-Migration <NAME>" to create the initial migration"
+    - Use the command "Update-Database" to create the database on the DB specified in the connection string "AuthDb"
+    - Use "Script-Migration" to create the SQL script for the migration
+- DB Scripts: you can find the scripts in the folder "Data/SQLScripts/MySQL" please run them in the following sequence
+    - 01.IndentityCoreEdited.sql
 
-TOKEN CONFIGURATION
--------------------
-    Define an area for the token in your appsettings.json file
+
+- AppSettings:
+----------------
+Define an area for the token in your appsettings.json file
     {
-      ...
-      "token": {
-        "key": "WGluV2ViQVBJLkpXVC5UZXN0VG9rZW4=",
-        "accessTokenExpiryMinutes": 1,
-        "issuer": "XinWeb",
-        "audience": "PostmanClient",
-        "subject": "authToken"
-      }
-      ...
+        ...
+          "XinWebAPI.Auth.JWTBearer": {
+            "token": {
+              "key": "WGluV2ViQVBJLkpXVC5UZXN0VG9rZW4=",
+              "accessTokenExpiryMinutes": 1,
+              "issuer": "XinWeb",
+              "audience": "PostmanClient",
+              "subject": "authToken"
+            }
+          },
+        ...
     }
-    - key: The key used to sign the token. This should be a long and random string BASE64. You can generate it from here https://www.base64encode.org/
-    - accessTokenExpiryMinutes: The time in minutes the token will be valid for
-    - issuer: The issuer of the token. This should be a unique identifier for your application
-    - audience: The audience for the token. This should be a unique identifier for the client application that will be using the token
-    - subject: The subject of the token. This should be a unique identifier for the user that will be using the token
+- key: The key used to sign the token. This should be a long and random string BASE64. You can generate it from here https://www.base64encode.org/
+- accessTokenExpiryMinutes: The time in minutes the token will be valid for
+- issuer: The issuer of the token. This should be a unique identifier for your application
+- audience: The audience for the token. This should be a unique identifier for the client application that will be using the token
+- subject: The subject of the token. This should be a unique identifier for the user that will be using the token
